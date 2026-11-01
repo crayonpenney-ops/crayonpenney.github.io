@@ -1,0 +1,857 @@
+<!DOCTYPE html>
+<html lang="th">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Math Match AR - เกมคณิตศาสตร์ AR</title>
+    
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    
+    <!-- Google Fonts (Prompt for Thai) -->
+    <link href="https://fonts.googleapis.com/css2?family=Prompt:wght@400;600;800&display=swap" rel="stylesheet">
+    
+    <!-- MediaPipe Libraries -->
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/control_utils/control_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/drawing_utils/drawing_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+    
+    <!-- Confetti & Tone.js (Audio) -->
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.6.0/dist/confetti.browser.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/tone/14.8.49/Tone.js"></script>
+
+    <style>
+        body {
+            margin: 0;
+            overflow: hidden;
+            font-family: 'Prompt', sans-serif;
+            background-color: #0f172a;
+            user-select: none;
+        }
+
+        /* Glassmorphism Styles */
+        .glass-panel {
+            background: rgba(255, 255, 255, 0.15);
+            backdrop-filter: blur(10px);
+            -webkit-backdrop-filter: blur(10px);
+            border: 1px solid rgba(255, 255, 255, 0.3);
+            box-shadow: 0 8px 32px 0 rgba(0, 0, 0, 0.3);
+        }
+
+        /* Game Cards */
+        .game-card {
+            transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
+            transform-origin: center;
+        }
+        
+        .game-card.hovered {
+            transform: scale(1.1);
+            filter: brightness(1.2);
+            z-index: 50;
+        }
+
+        .question-card {
+            background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%);
+            box-shadow: 0 0 15px rgba(59, 130, 246, 0.5), inset 0 0 10px rgba(255,255,255,0.3);
+        }
+
+        .answer-card {
+            background: linear-gradient(135deg, #a855f7 0%, #9333ea 100%);
+            box-shadow: 0 0 15px rgba(168, 85, 247, 0.5), inset 0 0 10px rgba(255,255,255,0.3);
+        }
+
+        .card-correct {
+            background: linear-gradient(135deg, #22c55e 0%, #16a34a 100%) !important;
+            box-shadow: 0 0 30px rgba(34, 197, 94, 0.8) !important;
+            animation: popOut 0.5s forwards ease-in-out;
+        }
+
+        /* Animations */
+        @keyframes shake {
+            0%, 100% { transform: translateX(0); }
+            20%, 60% { transform: translateX(-10px); }
+            40%, 80% { transform: translateX(10px); }
+        }
+        .shake { animation: shake 0.4s ease-in-out; }
+
+        @keyframes popOut {
+            0% { transform: scale(1); opacity: 1; }
+            50% { transform: scale(1.2); opacity: 1; }
+            100% { transform: scale(0); opacity: 0; }
+        }
+
+        /* Feedback Text Animation */
+        @keyframes floatUp {
+            0% { opacity: 0; transform: translateY(20px) scale(0.8); }
+            20% { opacity: 1; transform: translateY(0) scale(1.2); }
+            80% { opacity: 1; transform: translateY(-10px) scale(1); }
+            100% { opacity: 0; transform: translateY(-30px) scale(0.8); }
+        }
+        .feedback-text {
+            position: absolute;
+            font-size: 3rem;
+            font-weight: 800;
+            text-shadow: 2px 4px 10px rgba(0,0,0,0.5);
+            pointer-events: none;
+            animation: floatUp 1.5s forwards ease-out;
+            z-index: 100;
+        }
+
+        /* Video and Canvas Layers */
+        #video-element {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            object-fit: cover;
+            transform: scaleX(-1); /* Mirror */
+            z-index: 1;
+            display: none; /* Hide original video, draw on canvas */
+        }
+
+        #ar-canvas {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 2;
+        }
+
+        #ui-layer {
+            position: absolute;
+            top: 0; left: 0; width: 100%; height: 100%;
+            z-index: 10;
+            pointer-events: none; /* Let clicks pass to canvas if needed */
+        }
+        
+        .pointer-events-auto { pointer-events: auto; }
+        
+        /* Loading Spinner */
+        .loader {
+            border: 5px solid #f3f3f3;
+            border-top: 5px solid #3b82f6;
+            border-radius: 50%;
+            width: 50px;
+            height: 50px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+
+    <!-- Video Element (Hidden, used as source) -->
+    <video id="video-element" autoplay playsinline></video>
+    
+    <!-- Fullscreen AR Canvas -->
+    <canvas id="ar-canvas"></canvas>
+
+    <!-- Main UI Layer -->
+    <div id="ui-layer" class="flex flex-col justify-between p-6">
+        
+        <!-- HUD (Heads Up Display) -->
+        <div id="hud" class="hidden w-full flex justify-between items-start pointer-events-none">
+            <!-- Top Left: Score, Round, Time -->
+            <div class="glass-panel rounded-2xl p-4 text-white flex flex-col gap-2 min-w-[200px]">
+                <div class="text-3xl font-bold text-yellow-400">Score: <span id="score-display">0</span></div>
+                <div class="text-xl">ข้อที่: <span id="round-display">1 / 10</span></div>
+                <div class="text-xl flex items-center gap-2">
+                    <svg class="w-6 h-6 text-blue-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"></path></svg>
+                    <span id="time-display">00:00</span>
+                </div>
+            </div>
+
+            <!-- Top Right: Stars & Accuracy -->
+            <div class="glass-panel rounded-2xl p-4 text-white flex flex-col gap-2 items-end min-w-[200px]">
+                <div class="flex gap-1" id="stars-display">
+                    <!-- Stars will be injected here -->
+                </div>
+                <div class="text-xl">ความแม่นยำ: <span id="accuracy-display">100%</span></div>
+            </div>
+        </div>
+
+        <!-- Game Board (Questions & Answers) -->
+        <div id="game-board" class="hidden flex-1 w-full flex justify-between items-center mt-10 px-10 pointer-events-auto">
+            <!-- Left Column: Questions -->
+            <div id="questions-container" class="flex flex-col gap-6 w-1/4 max-w-sm"></div>
+            
+            <!-- Right Column: Answers -->
+            <div id="answers-container" class="flex flex-col gap-6 w-1/4 max-w-sm items-end"></div>
+        </div>
+    </div>
+
+    <!-- Start Screen -->
+    <div id="start-screen" class="absolute inset-0 bg-slate-900/90 z-50 flex flex-col items-center justify-center text-white pointer-events-auto backdrop-blur-md">
+        <h1 class="text-6xl font-extrabold mb-4 text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500 drop-shadow-lg">
+            Math Match AR
+        </h1>
+        <p class="text-2xl mb-8 text-blue-200">เกมจับคู่การบวกและการลบ ชั้นประถมศึกษาปีที่ 2</p>
+        
+        <div class="bg-slate-800 p-8 rounded-3xl border border-slate-700 shadow-2xl max-w-2xl text-center mb-8">
+            <h3 class="text-xl font-bold mb-4 text-yellow-400">วิธีเล่น (ใช้ปลายนิ้วชี้)</h3>
+            <ul class="text-lg text-left list-disc list-inside space-y-2 text-slate-300">
+                <li>ระบบจะเปิดกล้อง กรุณาถอยห่างให้เห็นมือชัดเจน</li>
+                <li>ใช้ <strong class="text-blue-400">ปลายนิ้วชี้</strong> แตะค้างไว้ที่การ์ดโจทย์ (สีฟ้า) ด้านซ้าย</li>
+                <li>ลากเส้นแสงไฟไปยังการ์ดคำตอบ (สีม่วง) ด้านขวาที่ถูกต้อง</li>
+                <li>จับคู่ถูก รับ 10 คะแนน / จับคู่ผิด หัก 5 คะแนน</li>
+            </ul>
+        </div>
+
+        <div id="loading-indicator" class="hidden flex-col items-center gap-4">
+            <div class="loader"></div>
+            <p class="text-blue-300 animate-pulse">กำลังโหลด AI จับการเคลื่อนไหวและเปิดกล้อง...</p>
+        </div>
+
+        <button id="start-btn" class="px-10 py-4 bg-gradient-to-r from-blue-500 to-purple-600 rounded-full text-2xl font-bold hover:scale-105 hover:shadow-[0_0_20px_rgba(59,130,246,0.6)] transition-all">
+            เริ่มเกมเลย!
+        </button>
+    </div>
+
+    <!-- End Screen -->
+    <div id="end-screen" class="hidden absolute inset-0 bg-slate-900/95 z-50 flex flex-col items-center justify-center text-white pointer-events-auto backdrop-blur-xl">
+        <h2 class="text-6xl font-bold mb-6 text-yellow-400 drop-shadow-[0_0_15px_rgba(250,204,21,0.5)]">สรุปผลการเรียน</h2>
+        
+        <div class="glass-panel p-10 rounded-3xl w-full max-w-3xl flex flex-col items-center gap-6 mb-8">
+            <div class="text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-green-400 to-blue-500" id="grade-display">
+                ดีเยี่ยม!
+            </div>
+            
+            <div class="grid grid-cols-2 gap-8 w-full text-xl">
+                <div class="bg-slate-800/50 p-4 rounded-xl text-center">
+                    <p class="text-slate-400">คะแนนรวม</p>
+                    <p class="text-4xl font-bold text-yellow-400 mt-2" id="final-score">0</p>
+                </div>
+                <div class="bg-slate-800/50 p-4 rounded-xl text-center">
+                    <p class="text-slate-400">เปอร์เซ็นต์ความถูกต้อง</p>
+                    <p class="text-4xl font-bold text-blue-400 mt-2" id="final-accuracy">0%</p>
+                </div>
+                <div class="bg-slate-800/50 p-4 rounded-xl text-center">
+                    <p class="text-slate-400">ตอบถูก / ผิด</p>
+                    <p class="text-3xl font-bold mt-2"><span class="text-green-400" id="final-correct">0</span> / <span class="text-red-400" id="final-incorrect">0</span></p>
+                </div>
+                <div class="bg-slate-800/50 p-4 rounded-xl text-center">
+                    <p class="text-slate-400">เวลาที่ใช้</p>
+                    <p class="text-3xl font-bold text-purple-400 mt-2" id="final-time">00:00</p>
+                </div>
+            </div>
+        </div>
+
+        <button id="restart-btn" class="px-10 py-4 bg-gradient-to-r from-green-500 to-emerald-600 rounded-full text-2xl font-bold hover:scale-105 hover:shadow-[0_0_20px_rgba(34,197,94,0.6)] transition-all">
+            เล่นอีกครั้ง
+        </button>
+    </div>
+
+    <script>
+        /**
+         * Database of Questions and Answers (Easy to modify)
+         * Can be expanded for other subjects by changing 'q' and 'a'
+         */
+        const questionDatabase = [
+            { q: "5 + 4", a: "9" },
+            { q: "12 + 8", a: "20" },
+            { q: "18 - 7", a: "11" },
+            { q: "25 - 9", a: "16" },
+            { q: "16 + 15", a: "31" },
+            { q: "34 - 12", a: "22" },
+            { q: "45 + 13", a: "58" },
+            { q: "70 - 26", a: "44" },
+            { q: "29 + 17", a: "46" },
+            { q: "63 - 18", a: "45" },
+            { q: "14 + 14", a: "28" },
+            { q: "50 - 25", a: "25" },
+            { q: "8 + 9", a: "17" },
+            { q: "40 - 18", a: "22" },
+            { q: "33 + 12", a: "45" }
+        ];
+
+        /* Game State Variables */
+        let gameState = {
+            isPlaying: false,
+            score: 0,
+            attempts: 0,
+            correctAnswers: 0,
+            incorrectAnswers: 0,
+            startTime: 0,
+            timerInterval: null,
+            currentRoundQuestions: [],
+            totalQuestionsPlayed: 0,
+            maxQuestions: 10,
+            cardsPerRound: 5,
+            
+            // Interaction State
+            activeQuestionId: null,
+            fingerPos: { x: 0, y: 0 },
+            isHandVisible: false,
+            connectionStatus: 'none', // 'none', 'drawing', 'validating'
+            
+            // Canvas scaling
+            scaleX: 1,
+            scaleY: 1
+        };
+
+        // DOM Elements
+        const arCanvas = document.getElementById('ar-canvas');
+        const ctx = arCanvas.getContext('2d');
+        const videoElement = document.getElementById('video-element');
+        const questionsContainer = document.getElementById('questions-container');
+        const answersContainer = document.getElementById('answers-container');
+        const uiLayer = document.getElementById('ui-layer');
+
+        // Audio Synth using Tone.js (No external files)
+        let synth;
+        
+        function initAudio() {
+            if(!synth) {
+                // Initialize a nice sounding synth for game feedback
+                synth = new Tone.PolySynth(Tone.Synth, {
+                    oscillator: { type: "sine" },
+                    envelope: { attack: 0.05, decay: 0.2, sustain: 0.2, release: 1 }
+                }).toDestination();
+                // Lower volume
+                synth.volume.value = -5;
+            }
+        }
+
+        function playSuccessSound() {
+            if(!synth) return;
+            const now = Tone.now();
+            synth.triggerAttackRelease("C5", "8n", now);
+            synth.triggerAttackRelease("E5", "8n", now + 0.1);
+            synth.triggerAttackRelease("G5", "4n", now + 0.2);
+            synth.triggerAttackRelease("C6", "2n", now + 0.3);
+        }
+
+        function playErrorSound() {
+            if(!synth) return;
+            const now = Tone.now();
+            synth.triggerAttackRelease("D3", "8n", now);
+            synth.triggerAttackRelease("A2", "4n", now + 0.15);
+        }
+
+        
+        // Shuffle array helper
+        function shuffleArray(array) {
+            let curId = array.length;
+            while (0 !== curId) {
+                let randId = Math.floor(Math.random() * curId);
+                curId -= 1;
+                let tmp = array[curId];
+                array[curId] = array[randId];
+                array[randId] = tmp;
+            }
+            return array;
+        }
+
+        function formatTime(seconds) {
+            const m = Math.floor(seconds / 60).toString().padStart(2, '0');
+            const s = (seconds % 60).toString().padStart(2, '0');
+            return `${m}:${s}`;
+        }
+
+        function updateHUD() {
+            document.getElementById('score-display').innerText = gameState.score;
+            document.getElementById('round-display').innerText = `${Math.min(gameState.totalQuestionsPlayed + 1, gameState.maxQuestions)} / ${gameState.maxQuestions}`;
+            
+            // Accuracy
+            let accuracy = 100;
+            if (gameState.attempts > 0) {
+                accuracy = Math.round((gameState.correctAnswers / gameState.attempts) * 100);
+            }
+            document.getElementById('accuracy-display').innerText = `${accuracy}%`;
+
+            // Stars based on accuracy
+            let starsHTML = '';
+            let numStars = accuracy >= 80 ? 3 : accuracy >= 50 ? 2 : 1;
+            if (gameState.attempts === 0) numStars = 3;
+            
+            for(let i=0; i<3; i++) {
+                if(i < numStars) {
+                    starsHTML += `<svg class="w-8 h-8 text-yellow-400 drop-shadow-[0_0_5px_rgba(250,204,21,0.8)]" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"></path></svg>`;
+                } else {
+                    starsHTML += `<svg class="w-8 h-8 text-gray-500" fill="currentColor" viewBox="0 0 20 20"><path d="M9.049 2.927c.3-.921 1.603-.921 1.902 0l1.07 3.292a1 1 0 00.95.69h3.462c.969 0 1.371 1.24.588 1.81l-2.8 2.034a1 1 0 00-.364 1.118l1.07 3.292c.3.921-.755 1.688-1.54 1.118l-2.8-2.034a1 1 0 00-1.175 0l-2.8 2.034c-.784.57-1.838-.197-1.539-1.118l1.07-3.292a1 1 0 00-.364-1.118L2.98 8.72c-.783-.57-.38-1.81.588-1.81h3.461a1 1 0 00.951-.69l1.07-3.292z"></path></svg>`;
+                }
+            }
+            document.getElementById('stars-display').innerHTML = starsHTML;
+        }
+
+        // Show floating feedback text at position
+        function showFeedbackText(text, x, y, isSuccess) {
+            const el = document.createElement('div');
+            el.className = `feedback-text ${isSuccess ? 'text-green-400' : 'text-red-400'}`;
+            el.innerText = text;
+            el.style.left = `${x}px`;
+            el.style.top = `${y}px`;
+            uiLayer.appendChild(el);
+            setTimeout(() => el.remove(), 1500);
+        }
+
+        function loadRound() {
+            questionsContainer.innerHTML = '';
+            answersContainer.innerHTML = '';
+            gameState.activeQuestionId = null;
+            gameState.connectionStatus = 'none';
+
+            // Select random questions
+            let pool = shuffleArray([...questionDatabase]);
+            let roundQuestions = pool.slice(0, gameState.cardsPerRound);
+            gameState.currentRoundQuestions = roundQuestions;
+
+            // Generate Answers array and shuffle it
+            let roundAnswers = shuffleArray([...roundQuestions]);
+
+            // Render Questions (Left)
+            roundQuestions.forEach((q, index) => {
+                const card = document.createElement('div');
+                card.className = 'game-card question-card w-48 h-24 rounded-2xl flex items-center justify-center text-4xl font-bold text-white border-2 border-white/30 cursor-pointer select-none';
+                card.id = `q-${index}`;
+                card.dataset.answer = q.a;
+                card.innerText = q.q;
+                questionsContainer.appendChild(card);
+            });
+
+            // Render Answers (Right)
+            roundAnswers.forEach((a, index) => {
+                const card = document.createElement('div');
+                card.className = 'game-card answer-card w-32 h-24 rounded-2xl flex items-center justify-center text-4xl font-bold text-white border-2 border-white/30 cursor-pointer select-none';
+                card.id = `a-${index}`;
+                card.dataset.value = a.a;
+                card.innerText = a.a;
+                answersContainer.appendChild(card);
+            });
+        }
+
+        function checkRoundComplete() {
+            // Check if all questions are hidden
+            const remaining = Array.from(document.querySelectorAll('.question-card')).filter(c => c.style.display !== 'none');
+            if (remaining.length === 0) {
+                if (gameState.totalQuestionsPlayed >= gameState.maxQuestions) {
+                    endGame();
+                } else {
+                    setTimeout(loadRound, 1000); // Load next round
+                }
+            }
+        }
+
+        
+        // Find DOM element at X, Y coordinate
+        function getElementAtPosition(x, y, className) {
+            const elements = document.elementsFromPoint(x, y);
+            for (let el of elements) {
+                if (el.classList.contains(className) && el.style.display !== 'none') {
+                    return el;
+                }
+            }
+            return null;
+        }
+
+        function processMatch(questionEl, answerEl) {
+            gameState.attempts++;
+            const isCorrect = questionEl.dataset.answer === answerEl.dataset.value;
+            
+            // Get center coordinates for effects
+            const qRect = questionEl.getBoundingClientRect();
+            const aRect = answerEl.getBoundingClientRect();
+            const midX = (qRect.left + aRect.left) / 2;
+            const midY = (qRect.top + aRect.top) / 2;
+
+            if (isCorrect) {
+                // Correct Match
+                gameState.score += 10;
+                gameState.correctAnswers++;
+                gameState.totalQuestionsPlayed++;
+                
+                playSuccessSound();
+                
+                // Visuals
+                questionEl.classList.add('card-correct');
+                answerEl.classList.add('card-correct');
+                showFeedbackText(["ยอดเยี่ยม!", "ถูกต้อง!", "เก่งมาก!", "Excellent!"][Math.floor(Math.random()*4)], midX - 50, midY - 50, true);
+                
+                // Confetti
+                confetti({
+                    particleCount: 80,
+                    spread: 70,
+                    origin: { x: midX / window.innerWidth, y: midY / window.innerHeight },
+                    colors: ['#22c55e', '#3b82f6', '#fbbf24', '#a855f7']
+                });
+
+                // Hide cards after animation
+                setTimeout(() => {
+                    questionEl.style.display = 'none';
+                    answerEl.style.display = 'none';
+                    checkRoundComplete();
+                }, 500);
+
+            } else {
+                // Incorrect Match
+                gameState.score = Math.max(0, gameState.score - 5);
+                gameState.incorrectAnswers++;
+                
+                playErrorSound();
+                
+                // Visuals
+                questionEl.classList.add('shake');
+                answerEl.classList.add('shake');
+                gameState.connectionStatus = 'error'; // Triggers red line momentarily
+                showFeedbackText("ลองใหม่อีกครั้ง", midX - 100, midY - 50, false);
+                
+                setTimeout(() => {
+                    questionEl.classList.remove('shake');
+                    answerEl.classList.remove('shake');
+                }, 400);
+            }
+            
+            updateHUD();
+            
+            // Reset connection
+            setTimeout(() => {
+                gameState.activeQuestionId = null;
+                gameState.connectionStatus = 'none';
+            }, isCorrect ? 0 : 500); // delay reset if error so user sees red line
+        }
+
+        
+        function resizeCanvas() {
+            arCanvas.width = window.innerWidth;
+            arCanvas.height = window.innerHeight;
+            // Calculate scale relative to video size
+            // However, object-fit: cover means video is cropped. 
+            // The simplest mapping is mapping normalized coords (0-1) to canvas (0-W, 0-H)
+        }
+        window.addEventListener('resize', resizeCanvas);
+
+        // Render Loop for Canvas (Runs 60 FPS)
+        function renderLoop() {
+            if(!gameState.isPlaying) {
+                requestAnimationFrame(renderLoop);
+                return;
+            }
+
+            // Clear Canvas
+            ctx.clearRect(0, 0, arCanvas.width, arCanvas.height);
+
+            // Draw Video Frame as Background
+            if (videoElement.readyState >= 2) {
+                ctx.save();
+                // Mirror the video on canvas
+                ctx.translate(arCanvas.width, 0);
+                ctx.scale(-1, 1);
+                
+                // Calculate cover crop
+                const videoRatio = videoElement.videoWidth / videoElement.videoHeight;
+                const canvasRatio = arCanvas.width / arCanvas.height;
+                let drawW, drawH, drawX, drawY;
+                
+                if (canvasRatio > videoRatio) {
+                    drawW = arCanvas.width;
+                    drawH = arCanvas.width / videoRatio;
+                    drawX = 0;
+                    drawY = (arCanvas.height - drawH) / 2;
+                } else {
+                    drawW = arCanvas.height * videoRatio;
+                    drawH = arCanvas.height;
+                    drawX = (arCanvas.width - drawW) / 2;
+                    drawY = 0;
+                }
+                
+                // Apply slight darken filter for better contrast
+                ctx.filter = 'brightness(0.6) contrast(1.1)';
+                ctx.drawImage(videoElement, drawX, drawY, drawW, drawH);
+                ctx.restore();
+            }
+
+            // Draw Interaction State
+            if (gameState.activeQuestionId) {
+                const qEl = document.getElementById(gameState.activeQuestionId);
+                if (qEl && qEl.style.display !== 'none') {
+                    const rect = qEl.getBoundingClientRect();
+                    const startX = rect.left + rect.width / 2;
+                    const startY = rect.top + rect.height / 2;
+                    
+                    // Draw Line from Card to Finger
+                    ctx.beginPath();
+                    ctx.moveTo(startX, startY);
+                    ctx.lineTo(gameState.fingerPos.x, gameState.fingerPos.y);
+                    
+                    ctx.lineWidth = 6;
+                    ctx.lineCap = 'round';
+                    
+                    if (gameState.connectionStatus === 'error') {
+                        ctx.strokeStyle = '#ef4444'; // Red
+                        ctx.shadowColor = '#ef4444';
+                    } else {
+                        ctx.strokeStyle = '#4ade80'; // Green/Glowing
+                        ctx.shadowColor = '#4ade80';
+                    }
+                    
+                    ctx.shadowBlur = 20;
+                    ctx.stroke();
+                    ctx.shadowBlur = 0; // reset
+                    
+                    // Draw pulsing node at card center
+                    ctx.beginPath();
+                    ctx.arc(startX, startY, 15 + Math.sin(Date.now() / 150) * 5, 0, 2*Math.PI);
+                    ctx.fillStyle = gameState.connectionStatus === 'error' ? '#ef4444' : '#3b82f6';
+                    ctx.fill();
+                }
+            }
+
+            // Draw Virtual Cursor / Glowing Ring at Finger Tip
+            if (gameState.isHandVisible) {
+                ctx.beginPath();
+                ctx.arc(gameState.fingerPos.x, gameState.fingerPos.y, 25, 0, 2 * Math.PI);
+                ctx.lineWidth = 4;
+                ctx.strokeStyle = 'rgba(255, 255, 255, 0.8)';
+                ctx.shadowBlur = 15;
+                ctx.shadowColor = '#ffffff';
+                ctx.stroke();
+                
+                // Inner dot
+                ctx.beginPath();
+                ctx.arc(gameState.fingerPos.x, gameState.fingerPos.y, 5, 0, 2 * Math.PI);
+                ctx.fillStyle = '#facc15';
+                ctx.fill();
+                ctx.shadowBlur = 0;
+            }
+
+            requestAnimationFrame(renderLoop);
+        }
+
+        // MediaPipe Results Callback
+        function onHandResults(results) {
+            if (!gameState.isPlaying) return;
+
+            // Reset hover states
+            document.querySelectorAll('.game-card').forEach(el => el.classList.remove('hovered'));
+            gameState.isHandVisible = false;
+
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                gameState.isHandVisible = true;
+                
+                // Get first hand, index finger tip (landmark 8)
+                const landmarks = results.multiHandLandmarks[0];
+                const indexFinger = landmarks[8];
+                
+                // Map normalized coords to mirrored screen coords
+                // x is flipped because camera is mirrored
+                gameState.fingerPos.x = arCanvas.width * (1 - indexFinger.x);
+                gameState.fingerPos.y = arCanvas.height * indexFinger.y;
+
+                // Optionally draw full skeleton for visual feedback
+                ctx.save();
+                ctx.translate(arCanvas.width, 0);
+                ctx.scale(-1, 1);
+                // Draw skeleton using un-mirrored coords on mirrored canvas
+                drawConnectors(ctx, landmarks, HAND_CONNECTIONS, {color: 'rgba(255, 255, 255, 0.5)', lineWidth: 3});
+                drawLandmarks(ctx, landmarks, {color: '#60a5fa', lineWidth: 1, radius: 4});
+                ctx.restore();
+
+                // Logic: Intersection Detection
+                if (gameState.connectionStatus === 'error') return; // Pause logic during error animation
+
+                const hoverQ = getElementAtPosition(gameState.fingerPos.x, gameState.fingerPos.y, 'question-card');
+                const hoverA = getElementAtPosition(gameState.fingerPos.x, gameState.fingerPos.y, 'answer-card');
+
+                // Visual Hover effect
+                if (hoverQ) hoverQ.classList.add('hovered');
+                if (hoverA) hoverA.classList.add('hovered');
+
+                if (!gameState.activeQuestionId) {
+                    // Not dragging yet. Check if hovering over a question to start drag
+                    if (hoverQ) {
+                        gameState.activeQuestionId = hoverQ.id;
+                        gameState.connectionStatus = 'drawing';
+                        // Small sound for pickup
+                        if(synth) synth.triggerAttackRelease("C4", "32n");
+                    }
+                } else {
+                    // Currently dragging. Check if hovering over an answer to evaluate
+                    if (hoverA) {
+                        const qEl = document.getElementById(gameState.activeQuestionId);
+                        if(qEl) {
+                            processMatch(qEl, hoverA);
+                        }
+                    }
+                }
+            } else {
+                // Hand lost. Cancel drag.
+                if (gameState.activeQuestionId && gameState.connectionStatus !== 'error') {
+                    gameState.activeQuestionId = null;
+                    gameState.connectionStatus = 'none';
+                }
+            }
+        }
+
+        
+        let camera = null;
+        let handsModel = null;
+
+        async function initCameraAndAI() {
+            document.getElementById('start-btn').classList.add('hidden');
+            document.getElementById('loading-indicator').classList.remove('hidden');
+            document.getElementById('loading-indicator').classList.add('flex');
+
+            handsModel = new Hands({locateFile: (file) => {
+                return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+            }});
+
+            handsModel.setOptions({
+                maxNumHands: 1, // Track 1 hand for simplicity
+                modelComplexity: 1,
+                minDetectionConfidence: 0.7,
+                minTrackingConfidence: 0.7
+            });
+            handsModel.onResults(onHandResults);
+
+            camera = new Camera(videoElement, {
+                onFrame: async () => {
+                    await handsModel.send({image: videoElement});
+                },
+                width: 1280,
+                height: 720
+            });
+
+            try {
+                await camera.start();
+                startGame();
+            } catch (err) {
+                console.error("Camera access denied or failed", err);
+                alert("ไม่สามารถเปิดกล้องได้ กรุณาอนุญาตการเข้าถึงกล้องเพื่อเล่นเกม");
+                // Restore UI
+                document.getElementById('start-btn').classList.remove('hidden');
+                document.getElementById('loading-indicator').classList.add('hidden');
+                document.getElementById('loading-indicator').classList.remove('flex');
+            }
+        }
+
+        function updateTimer() {
+            if(!gameState.isPlaying) return;
+            const now = Math.floor(Date.now() / 1000);
+            const elapsed = now - gameState.startTime;
+            document.getElementById('time-display').innerText = formatTime(elapsed);
+        }
+
+        function startGame() {
+            // Initialize Audio Context on user gesture
+            initAudio();
+            Tone.start();
+
+            // Hide Start Screen, Show Game UI
+            document.getElementById('start-screen').classList.add('hidden');
+            document.getElementById('hud').classList.remove('hidden');
+            document.getElementById('game-board').classList.remove('hidden');
+            document.getElementById('game-board').classList.add('flex');
+
+            // Reset State
+            gameState.isPlaying = true;
+            gameState.score = 0;
+            gameState.attempts = 0;
+            gameState.correctAnswers = 0;
+            gameState.incorrectAnswers = 0;
+            gameState.totalQuestionsPlayed = 0;
+            gameState.startTime = Math.floor(Date.now() / 1000);
+            
+            if(gameState.timerInterval) clearInterval(gameState.timerInterval);
+            gameState.timerInterval = setInterval(updateTimer, 1000);
+
+            updateHUD();
+            resizeCanvas();
+            loadRound();
+            
+            // Start render loop
+            requestAnimationFrame(renderLoop);
+        }
+
+        function endGame() {
+            gameState.isPlaying = false;
+            clearInterval(gameState.timerInterval);
+
+            const elapsed = Math.floor(Date.now() / 1000) - gameState.startTime;
+            const accuracy = gameState.attempts > 0 ? Math.round((gameState.correctAnswers / gameState.attempts) * 100) : 0;
+            
+            let grade = "ควรฝึกเพิ่ม";
+            let gradeColor = "from-red-400 to-orange-500";
+            if (accuracy >= 80) {
+                grade = "ดีเยี่ยม!";
+                gradeColor = "from-green-400 to-blue-500";
+            } else if (accuracy >= 60) {
+                grade = "ดี";
+                gradeColor = "from-blue-400 to-purple-500";
+            }
+
+            // Populate End Screen
+            const gradeEl = document.getElementById('grade-display');
+            gradeEl.innerText = grade;
+            gradeEl.className = `text-4xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r ${gradeColor}`;
+            
+            document.getElementById('final-score').innerText = gameState.score;
+            document.getElementById('final-accuracy').innerText = `${accuracy}%`;
+            document.getElementById('final-correct').innerText = gameState.correctAnswers;
+            document.getElementById('final-incorrect').innerText = gameState.incorrectAnswers;
+            document.getElementById('final-time').innerText = formatTime(elapsed);
+
+            // Show End Screen
+            document.getElementById('hud').classList.add('hidden');
+            document.getElementById('game-board').classList.add('hidden');
+            document.getElementById('game-board').classList.remove('flex');
+            document.getElementById('end-screen').classList.remove('hidden');
+            document.getElementById('end-screen').classList.add('flex');
+            
+            // Big Confetti
+            if (accuracy >= 60) {
+                const duration = 3 * 1000;
+                const end = Date.now() + duration;
+                (function frame() {
+                    confetti({ particleCount: 5, angle: 60, spread: 55, origin: { x: 0 }, colors: ['#22c55e', '#3b82f6', '#fbbf24'] });
+                    confetti({ particleCount: 5, angle: 120, spread: 55, origin: { x: 1 }, colors: ['#a855f7', '#ec4899', '#ef4444'] });
+                    if (Date.now() < end) requestAnimationFrame(frame);
+                }());
+            }
+        }
+
+        
+        document.getElementById('start-btn').addEventListener('click', () => {
+            initCameraAndAI();
+        });
+
+        document.getElementById('restart-btn').addEventListener('click', () => {
+            document.getElementById('end-screen').classList.add('hidden');
+            document.getElementById('end-screen').classList.remove('flex');
+            startGame();
+        });
+
+        // Mouse fallback for testing if camera isn't moving hands
+        arCanvas.addEventListener('mousemove', (e) => {
+            if(!gameState.isHandVisible && gameState.isPlaying) {
+                // If hand not detected, simulate finger with mouse to guarantee playability
+                gameState.fingerPos.x = e.clientX;
+                gameState.fingerPos.y = e.clientY;
+                
+                // Simulate collision logic
+                if (gameState.connectionStatus === 'error') return;
+
+                const hoverQ = getElementAtPosition(gameState.fingerPos.x, gameState.fingerPos.y, 'question-card');
+                const hoverA = getElementAtPosition(gameState.fingerPos.x, gameState.fingerPos.y, 'answer-card');
+
+                document.querySelectorAll('.game-card').forEach(el => el.classList.remove('hovered'));
+                if (hoverQ) hoverQ.classList.add('hovered');
+                if (hoverA) hoverA.classList.add('hovered');
+
+                if (!gameState.activeQuestionId && hoverQ) {
+                    gameState.activeQuestionId = hoverQ.id;
+                    gameState.connectionStatus = 'drawing';
+                    if(synth) synth.triggerAttackRelease("C4", "32n");
+                } else if (gameState.activeQuestionId && hoverA) {
+                    const qEl = document.getElementById(gameState.activeQuestionId);
+                    if(qEl) processMatch(qEl, hoverA);
+                }
+                
+                // Enable manual drawing rendering
+                gameState.isHandVisible = true; 
+                setTimeout(() => { gameState.isHandVisible = false; }, 100);
+            }
+        });
+
+        // Initial setup
+        resizeCanvas();
+
+    </script>
+</body>
+</html>
